@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: flyo-disruption-desk-api
+    name: flyo-disruption-desk-v2-api
     runtime: python
     plan: free
     rootDir: backend
@@ -20,7 +20,7 @@ services:
         value: '^https://[a-z0-9-]+\.onrender\.com$'
 
   - type: web
-    name: flyo-disruption-desk
+    name: flyo-disruption-desk-v2
     runtime: static
     rootDir: frontend
     buildCommand: npm ci && npm run build
@@ -28,7 +28,7 @@ services:
     envVars:
       - key: VITE_API_URL
         fromService:
-          name: flyo-disruption-desk-api
+          name: flyo-disruption-desk-v2-api
           type: web
           envVarKey: RENDER_EXTERNAL_URL
     routes:
