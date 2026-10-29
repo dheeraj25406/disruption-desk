@@ -10,6 +10,8 @@ services:
     envVars:
       - key: APP_ENV
         value: production
+      - key: PYTHON_VERSION
+        value: 3.11.11
       - key: DATABASE_URL
         value: sqlite:///./flyo_disruption.db
       - key: GEMINI_MODEL
