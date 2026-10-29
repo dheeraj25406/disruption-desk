@@ -10,3 +10,5 @@ dist/
 *.log
 *.tsbuildinfo
 .DS_Store
+.vercel/
+.render/
