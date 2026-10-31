@@ -1,11 +1,13 @@
 from app.models import Case, Alternative
 from app.db import Base,engine,SessionLocal
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 import re
 from app.services.labels import AIRLINES
 
 def dt(day,hour,minute=0):
-    base=datetime(2026,10,30,tzinfo=timezone(timedelta(hours=5,minutes=30)))
+    today=datetime.now(ZoneInfo("Asia/Kolkata")).date()
+    base=datetime.combine(today,datetime.min.time(),tzinfo=ZoneInfo("Asia/Kolkata"))
     return (base+timedelta(days=day-30,hours=hour,minutes=minute)).isoformat(timespec="seconds")
 
 def generated_legs(idx,origin,destination,airports):
@@ -27,8 +29,8 @@ def seed():
     Base.metadata.create_all(engine); db=SessionLocal()
     try:
         rows=[
-        Case(id="INDEMO0025",passenger_label="Synthetic passenger 25",flight="DEMO-AI-2125",airline="Air India",origin="BOM",destination="GOI",disruption="Schedule disruption",detail="Schedule disruption affects a two-leg itinerary.",evidence_complete=True,review_required=True,legs=[{"origin":"BOM","destination":"COK","departure":dt(30,9),"arrival":dt(30,11)},{"origin":"COK","destination":"GOI","departure":dt(30,11,30),"arrival":dt(30,13,30)}]),
-        Case(id="INDEMO0001",passenger_label="Synthetic passenger 01",flight="DEMO-FY-1001",airline="Flyo Demo Air",origin="DEL",destination="BLR",disruption="Flight cancellation",detail="First leg cancelled; a same-day simulated direct candidate exists.",evidence_complete=True,review_required=False,legs=[{"origin":"DEL","destination":"BLR","departure":dt(30,8),"arrival":dt(30,10)}]),
+        Case(id="INDEMO0025",passenger_label="Synthetic passenger 25",flight="AI 2573",airline="Air India",origin="DEL",destination="BOM",disruption="Simulated cancellation",detail="TRAINING SCENARIO: AI 2573 is a published DEL–BOM schedule for 31 Oct 2026 (05:30–07:55 IST). Cancellation is artificial and is not a report of a real operational event.",evidence_complete=True,review_required=True,legs=[{"origin":"DEL","destination":"BOM","departure":dt(30,5,30),"arrival":dt(30,7,55)}]),
+        Case(id="INDEMO0001",passenger_label="Synthetic passenger 01",flight="6E 826",airline="IndiGo",origin="DEL",destination="BLR",disruption="Simulated delay",detail="TRAINING SCENARIO: 6E 826 is a published DEL–BLR schedule for 31 Oct 2026 (09:30–12:25 IST). Delay is artificial and is not a report of a real operational event.",evidence_complete=True,review_required=False,legs=[{"origin":"DEL","destination":"BLR","departure":dt(30,9,30),"arrival":dt(30,12,25)}]),
         Case(id="INDEMO0002",passenger_label="Synthetic passenger 02",flight="DEMO-FY-1002",airline="Flyo Demo Air",origin="BOM",destination="MAA",disruption="Missed connection",detail="Connection buffer is below the configured minimum.",evidence_complete=True,review_required=False,legs=[{"origin":"BOM","destination":"HYD","departure":dt(30,7),"arrival":dt(30,9)},{"origin":"HYD","destination":"MAA","departure":dt(30,9,30),"arrival":dt(30,11)}]),
         Case(id="INDEMO0003",passenger_label="Synthetic passenger 03",flight="DEMO-FY-1003",airline="Flyo Demo Air",origin="CCU",destination="GAU",disruption="Weather delay",detail="No eligible synthetic candidate is seeded.",evidence_complete=True,review_required=False,legs=[{"origin":"CCU","destination":"GAU","departure":dt(30,12),"arrival":dt(30,13)}]),
         Case(id="INDEMO0004",passenger_label="Synthetic passenger 04",flight="DEMO-FY-1004",airline="Flyo Demo Air",origin="PNQ",destination="GOI",disruption="Data discrepancy",detail="Required disruption evidence is incomplete.",evidence_complete=False,review_required=True,legs=[{"origin":"PNQ","destination":"GOI","departure":dt(30,14),"arrival":dt(30,15)}]),
@@ -37,7 +39,45 @@ def seed():
         existing_ids={x[0] for x in db.query(Case.id).all()}
         rows=[row for row in rows if row.id not in existing_ids]
         db.add_all(rows); db.flush()
-        defs=[("INDEMO0001","AI 2001","DEL","BLR",8,30,10,20,True),("INDEMO0003","QP 2003","CCU","GAU",15,0,16,0,False),("INDEMO0005","SG 3001","DEL","COK",12,0,16,0,True),("INDEMO0005","SG 3002","DEL","COK",13,0,17,0,True),("INDEMO0005","SG 3003","DEL","COK",14,0,18,0,False),("INDEMO0006","AI 6001","BLR","DEL",20,0,23,0,True)]
+        # Startup seeding is idempotent, but refresh the two curated live-flight
+        # training scenarios so persistent Render databases advance to today's date.
+        curated={
+          "INDEMO0025": ("AI 2573","Air India","DEL","BOM","Simulated cancellation", "TRAINING SCENARIO: AI 2573 is a published DEL–BOM schedule for today (05:30–07:55 IST). Cancellation is artificial and is not a report of a real operational event.",5,30,7,55),
+          "INDEMO0001": ("6E 826","IndiGo","DEL","BLR","Simulated delay", "TRAINING SCENARIO: 6E 826 is a published DEL–BLR schedule for today (09:30–12:25 IST). Delay is artificial and is not a report of a real operational event.",9,30,12,25),
+        }
+        for case_id,(flight,airline,origin,destination,disruption,detail,dh,dm,ah,am) in curated.items():
+            case_row=db.get(Case,case_id)
+            if case_row:
+                case_row.flight=flight; case_row.airline=airline
+                case_row.origin=origin; case_row.destination=destination
+                case_row.disruption=disruption; case_row.detail=detail
+                case_row.evidence_complete=True; case_row.review_required=(case_id=="INDEMO0025")
+                case_row.legs=[{"origin":origin,"destination":destination,"departure":dt(30,dh,dm),"arrival":dt(30,ah,am)}]
+        # The sample database may persist between deploys; move all generated
+        # itineraries and candidates onto today's date while retaining local times.
+        today=datetime.now(ZoneInfo("Asia/Kolkata")).date().isoformat()
+        for case_row in db.query(Case).all():
+            if case_row.id in curated: continue
+            refreshed=[]
+            for leg in case_row.legs or []:
+                item=dict(leg)
+                for key in ("departure","arrival"):
+                    value=item.get(key)
+                    if value:
+                        parsed=datetime.fromisoformat(value)
+                        item[key]=parsed.replace(year=int(today[:4]),month=int(today[5:7]),day=int(today[8:10])).isoformat(timespec="seconds")
+                refreshed.append(item)
+            case_row.legs=refreshed
+        for alternative in db.query(Alternative).all():
+            if alternative.case_id in curated:
+                db.delete(alternative)
+                continue
+            for key in ("departure","arrival"):
+                value=getattr(alternative,key)
+                if value:
+                    parsed=datetime.fromisoformat(value)
+                    setattr(alternative,key,parsed.replace(year=int(today[:4]),month=int(today[5:7]),day=int(today[8:10])).isoformat(timespec="seconds"))
+        defs=[("INDEMO0003","QP 2003","CCU","GAU",15,0,16,0,False),("INDEMO0005","SG 3001","DEL","COK",12,0,16,0,True),("INDEMO0005","SG 3002","DEL","COK",13,0,17,0,True),("INDEMO0005","SG 3003","DEL","COK",14,0,18,0,False),("INDEMO0006","AI 6001","BLR","DEL",20,0,23,0,True)]
         seen_alts=set()
         for existing in db.query(Alternative).order_by(Alternative.id).all():
             key=(existing.case_id,existing.flight)
@@ -73,11 +113,13 @@ def seed():
         db.flush()
         names=["Aarav Mehta","Ananya Iyer","Rohan Malhotra","Diya Nair","Arjun Rao","Meera Kapoor","Vihaan Patel","Aditi Menon","Ishaan Shah","Kavya Reddy","Reyansh Bhatia","Saanvi Kulkarni","Aditya Chawla","Ira Deshmukh","Kabir Sethi","Myra Krishnan","Advait Joshi","Tara Mukherjee","Dhruv Anand","Pari Srinivasan","Vivaan Khanna","Nisha Pillai","Kiaan Verma","Riya Banerjee","Neil Fernandes","Suhana Das","Yash Thakur","Anika Bose","Om Prakash","Sakshi Jain","Arnav Ghosh","Mira Subramanian","Kunal Arora","Navya Shetty","Dev Malhotra","Ishita Roy","Ayaan Kapoor","Pooja Nambiar","Samar Gill","Tanvi Rao","Rahul Bansal","Lavanya Menon","Manav Sood","Jhanvi Desai","Parth Trivedi","Shreya Sinha","Nikhil Dutta","Anvi Narang","Ritvik Kulkarni","Sia Chatterjee"]
         carrier_codes={v:k for k,v in AIRLINES.items()}
-        core_flights={"INDEMO0001":"AI","INDEMO0002":"6E","INDEMO0003":"QP","INDEMO0004":"IX","INDEMO0005":"SG","INDEMO0006":"AI"}
+        core_flights={"INDEMO0001":"6E","INDEMO0002":"6E","INDEMO0003":"QP","INDEMO0004":"IX","INDEMO0005":"SG","INDEMO0006":"AI"}
         for pos,row in enumerate(db.query(Case).order_by(Case.id).all()):
             row.passenger_label=names[pos%len(names)]
             row.detail=row.detail.replace("Synthetic ","").replace("synthetic ","")
-            if row.id in core_flights:
+            if row.id in curated:
+                pass
+            elif row.id in core_flights:
                 match=re.search(r"(\d+)$",row.flight)
                 num=match.group(1) if match else row.flight.rsplit("-",1)[-1]
                 row.flight=f"{core_flights[row.id]} {num}"
